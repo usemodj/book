@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+{% import "bootstrap/wtf.html" as wtf %}
+{% import "_macros.html" as macros %}
+{% block head %}
+{{ super() }}
+    <script src='http://cdnjs.cloudflare.com/ajax/libs/d3/3.3.3/d3.min.js'></script>
+    <script src="{{ url_for('static', filename='js/gantt-chart.js') }}"></script>
+{% endblock %}
+{% block title %} Reservation - Booking {% endblock %}
+
+{% block page_content %}
+
+<div class="page-header">
+    <h1>Room: {{ room.number }}({{ room.name }}) </h1>
+ 	<form method="POST" action="/room/{{ room.number }}" class="form" id="roomForm">
+	{{ form.hidden_tag() }}
+	{{ wtf.form_errors(form) }}
+	<div class="col-md-3">
+		{{ form.from_date.label }}: 
+		<div class="input-group input-append date datepicker" id="from_date">
+		{{ form.from_date(class="form-control") }}
+		<span class="input-group-addon add-on"><span class="glyphicon glyphicon-calendar"></span></span>
+		</div>
+	</div>
+	<div class="col-md-3">
+		{{ form.to_date.label }}: 
+		<div class="input-group input-append date datepicker" id="to_date">
+		{{ form.to_date(class="form-control") }}
+		<span class="input-group-addon add-on"><span class="glyphicon glyphicon-calendar"></span></span>
+		</div>
+	</div>
+	<div class="col-md-3">
+	<br>
+	{{ form.submit(class="btn btn-default") }}
+	</div>
+	</form>
+</div>
+
+<br>
+<br>
+
+<div class="row">
+	<div class="col-md-2 text-right">Guests:</div>
+	<div class="col-md-2">{{ room.guests }}</div>
+	<div class="col-md-2 text-right">Active:</div>
+	<div class="col-md-2">{{ room.active }}</div>
+	<div class="col-md-2"><a href="/room/{{ room.number }}/edit" class="btn btn-default">Edit</a></div>
+	
+</div>
+
+<div id="gantt-chart" style="height:200px">
+	<div class="svg"></div>
+	<div id="tag"></div>
+</div>
+
+<script>
+	var fromDate = "{{ form.from_date.data}}";
+	var toDate = "{{ form.to_date.data}}";
+	var categories = ["{{ room.number}}({{ room.name }})"];
+	var taskArray = {{books | safe}};
+
+	var w = 800;
+	var h = 250;
+	
+	var dateFormat = d3.time.format("%Y-%m-%d");
+	
+	fromDate = dateFormat.parse(fromDate);
+	toDate = dateFormat.parse(toDate);
+	
+	var minDate = d3.min(taskArray, function(d) {
+					return dateFormat.parse(d.checkin_on);
+				});
+	minDate = d3.min([fromDate, minDate], function(date){
+		return date;
+	});
+	var maxDate = toDate;
+
+	var timeScale = d3.time.scale().domain([minDate, maxDate]).range([10, w - 150])
+	
+	var catsUnfiltered = categories; // for vert labels
+	categories = checkUnique(categories);
+	
+	var svg = d3.selectAll(".svg")
+	.append("svg").attr("width", w).attr("height", h).attr("class", "svg");
+
+	var title = svg.append("text").text("Room Schedule Chart").attr("x", w / 2)
+			.attr("y", 25).attr("text-anchor", "middle").attr("font-size", 18)
+			.attr("fill", "#009FFC");
+	
+	makeGant(taskArray, w, h);
+</script>
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+$(document).ready(function() {
+    $('.datepicker').datepicker({
+            format: 'yyyy-mm-dd',
+            language: 'kr'
+        });
+    });
+</script>
+{% endblock %}

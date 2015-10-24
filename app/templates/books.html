@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% import "bootstrap/wtf.html" as wtf %}
+{% import "_macros.html" as macros %}
+
+{% block title %} Reservation - Books {% endblock %}
+
+{% block page_content %}
+	
+<div class="page-header">
+    <h1>Books</h1>
+	{% for field, errors in form.errors.iteritems() %}
+	<div class="alert alert-warning">
+	    {{ form[field].label }}: {{ ', '.join(errors) }}
+	</div>
+	{% endfor %}
+	<form method="POST" action="books" class="form" id="booksForm">
+	{{ form.hidden_tag() }}
+	{{ wtf.form_errors(form) }}
+	<div class="col-md-3">
+		{{ form.from_date.label }}: 
+		<div class="input-group input-append date datepicker" id="from_date">
+		{{ form.from_date(class="form-control") }}
+		<span class="input-group-addon add-on"><span class="glyphicon glyphicon-calendar"></span></span>
+		</div>
+	</div>
+	<div class="col-md-3">
+		{{ form.to_date.label }}: 
+		<div class="input-group input-append date datepicker" id="to_date">
+		{{ form.to_date(class="form-control") }}
+		<span class="input-group-addon add-on"><span class="glyphicon glyphicon-calendar"></span></span>
+		</div>
+	</div>
+	<div class="col-md-3">
+	{{ form.name.label }}:
+	{{ form.name(class="form-control") }}
+	</div>
+	<div class="col-md-3">
+	{{ form.email.label }}:
+	{{ form.email(class="form-control") }}
+	</div>
+	<div class="col-md-12 text-center">
+	<br>
+	{{ form.submit(class="btn btn-default") }}
+	</div>
+	</form>
+	
+	<br>
+	<br>
+</div>
+<table class="table table-hover followers">
+    <thead><tr><th>Checkin Date</th><th>Checkout Date</th><th>Rooms</th><th>Name</th><th>Email</th>
+    <th>Mobile</th><th>Phone</th></tr></thead>
+    {% for book in books %}
+    <tr>
+        <td>
+            <a href="/book/{{book.id}}">
+                {{ book.checkin_on }}
+            </a>
+        </td>
+        <td>{{ book.checkout_on }}</td>
+        <td>{{ book.room_count }}</td>
+        <td>{{ book.user.name }}</td>
+        <td>{{ book.user.email }}</td>
+        <td>{{ book.user.profile.mobile if book.user.profile }}</td>
+        <td>{{ book.user.profile.phone if book.user.profile }}</td>
+    </tr>
+    {% endfor %}
+</table>
+<div class="pagination">
+    {{ macros.pagination_widget(pagination, '.books', from_date=from_date, to_date=to_date, name=name, email=email) }}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+$(document).ready(function() {
+    $('.datepicker').datepicker({
+            format: 'yyyy-mm-dd',
+            language: 'kr',
+            //startDate: new Date()
+        });
+    });
+</script>
+{% endblock %}

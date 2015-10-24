@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% import "bootstrap/wtf.html" as wtf %}
+{% import "_macros.html" as macros %}
+{% block head %}
+{{ super() }}
+    <script src='http://cdnjs.cloudflare.com/ajax/libs/d3/3.3.3/d3.min.js'></script>
+    <script src="{{ url_for('static', filename='js/gantt-chart.js') }}"></script>
+{% endblock %}
+
+{% block title %} Reservation - Booking {% endblock %}
+
+{% block page_content %}
+
+<div class="page-header">
+    <h1>Book ID: {{ book.id }} </h1>
+    <div class="col-md-3">Check In:</div>
+    <div class="col-md-3">{{ book.checkin_on }}</div>
+    <div class="col-md-3">Check Out:</div>
+    <div class="col-md-3">{{ book.checkout_on }}</div>
+
+    <div class="col-md-3">Name:</div>
+    <div class="col-md-3">{{ book.user.name }}</div>
+    <div class="col-md-3">Email:</div>
+    <div class="col-md-3">{{ book.user.email }}</div>
+
+    <div class="col-md-3">Mobile:</div>
+    <div class="col-md-3">{{ book.user.profile.mobile }}</div>
+    <div class="col-md-3">Phone:</div>
+    <div class="col-md-3">{{ book.user.profile.phone }}</div>
+    
+</div>
+<table class="table table-hover followers">
+    <thead><tr><th>Room Number</th><th>Room Name</th></tr></thead>
+    {% for room in book.rooms %}
+    <tr>
+        <td>
+            <a href="/room/{{room.number}}">
+                {{ room.number }}
+            </a>
+        </td>
+        <td>{{ room.name }}</td>
+    </tr>
+    {% endfor %}
+</table>
+
+<div id="gantt-chart" style="height:400px">
+	<div class="svg"></div>
+	<div id="tag"></div>
+</div>
+
+<script>
+	var w = 800;
+	var h = 400;
+	var dateFormat = d3.time.format("%Y-%m-%d");
+	var taskArray = {{ rooms_schedule | safe }};
+	var categories = new Array()
+	for(var i = 0; i < taskArray.length; i++){
+		categories.push(taskArray[i].number)
+	}
+
+	var minDate = dateFormat.parse('{{ from_date }}');
+	var maxDate = dateFormat.parse('{{ to_date }}');
+	
+	var timeScale = d3.time.scale().domain([minDate, maxDate]).range([10, w - 150])
+	
+	var catsUnfiltered = categories; // for vert labels
+	categories = checkUnique(categories);
+	
+	var svg = d3.selectAll(".svg")
+	.append("svg").attr("width", w).attr("height", h).attr("class", "svg");
+
+	var title = svg.append("text").text("Room Schedule Chart").attr("x", w / 2)
+			.attr("y", 25).attr("text-anchor", "middle").attr("font-size", 18)
+			.attr("fill", "#009FFC");
+	
+	makeGant(taskArray, w, h);
+
+</script>
+
+{% endblock %}
+

@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% import "bootstrap/wtf.html" as wtf %}
+{% import "_macros.html" as macros %}
+
+{% block head %}
+{{ super() }}
+    <script src='http://cdnjs.cloudflare.com/ajax/libs/d3/3.3.3/d3.min.js'></script>
+    <script src="{{ url_for('static', filename='js/gantt-chart.js') }}"></script>
+{% endblock %}
+
+{% block title %} Reservation - Rooms {% endblock %}
+
+{% block page_content %}
+{% for field, errors in form.errors.iteritems() %}
+<div class="alert alert-warning">
+    {{ form[field].label }}: {{ ', '.join(errors) }}
+</div>
+{% endfor %}
+<form method="POST" action="/reservation" class="form" id="reservationForm">
+{{ form.hidden_tag() }}
+{{ wtf.form_errors(form) }}
+<div class="col-md-3">
+	{{ form.from_date.label }}: 
+	<div class="input-group input-append date datepicker" id="from_date">
+	{{ form.from_date(class="form-control") }}
+	<span class="input-group-addon add-on"><span class="glyphicon glyphicon-calendar"></span></span>
+	</div>
+</div>
+<div class="col-md-3">
+	{{ form.to_date.label }}: 
+	<div class="input-group input-append date datepicker" id="to_date">
+	{{ form.to_date(class="form-control") }}
+	<span class="input-group-addon add-on"><span class="glyphicon glyphicon-calendar"></span></span>
+	</div>
+</div>
+<div class="col-md-3">
+<br>
+{{ form.submit(class="btn btn-default") }}
+</div>
+</form>
+
+<br>
+<br>
+<div class="page-header">
+    <h1> Room Reservation </h1>
+</div>
+<form method="POST" action="/reservation/booking" class="form">
+{% for field, errors in booking_form.errors.iteritems() %}
+<div class="alert alert-warning">
+    {{ booking_form[field].label }}: {{ ', '.join(errors) }}
+</div>
+{% endfor %}
+{% if booking_form.csrf_token.errors %}
+    <div class="warning">You have submitted an invalid CSRF token</div>
+{% endif %}
+
+{{ booking_form.csrf_token }}
+<div class="col-md-3">
+{{ booking_form.email.label }}: 
+	{{ booking_form.email(class="form-control") }}
+</div>
+<div class="col-md-3">
+{{ booking_form.name.label }}: {{ booking_form.name(class="form-control") }}
+</div>
+<div class="col-md-3">
+{{ booking_form.from_date.label }}: {{ booking_form.from_date(value=form.from_date.data, readonly=True, class="form-control") }}
+</div>
+<div class="col-md-3">
+{{ booking_form.to_date.label }}: {{ booking_form.to_date(value=form.to_date.data, readonly=True, class="form-control") }}
+</div>
+<div class="col-md-3">
+{{ booking_form.mobile.label }}: {{ booking_form.mobile(class="form-control") }}
+</div>
+<div class="col-md-3">
+{{ booking_form.phone.label }}: {{ booking_form.phone(class="form-control") }}
+</div>
+<br>
+<table class="table table-hover followers">
+    <thead><tr><th>Room </th><th>Guests</th><th> Booking </th></tr></thead>
+    {% for room in rooms %}
+    <tr>
+        <td>
+            <a href="/room/{{room.number}}">
+                {{ room.number }}({{ room.name }})
+            </a>
+        </td>
+        <td> {{ room.guests }} </td>
+        <td> 
+        	{{ booking_form.room_id(value=room.id, class="form-control") }}
+        </td>
+    </tr>
+    {% endfor %}
+</table>
+<div class="col-md-12 text-center">
+	{{ booking_form.submit(class="btn btn-primary") }}
+</div>
+</form>
+<br>
+{% if pagination %}
+<div class="pagination">
+    {{ macros.pagination_widget(pagination, '.reservation', from_date=from_date, to_date=to_date) }}
+</div>
+{% endif %}
+
+<br>
+<div id="gantt-chart" style="height:600px">
+	<div class="svg"></div>
+	<div id="tag"></div>
+</div>
+
+<script>
+	var w = 800;
+	var h = 500;
+	var dateFormat = d3.time.format("%Y-%m-%d");
+	var taskArray = {{ rooms_schedules | safe }};
+	var categories = new Array()
+	for(var i = 0; i < taskArray.length; i++){
+		categories.push(taskArray[i].number)
+	}
+	var catsUnfiltered = categories; // for vert labels
+	categories = checkUnique(categories);
+
+	var minDate = dateFormat.parse('{{ min_date }}');
+	var maxDate = dateFormat.parse('{{ max_date }}');
+	
+	var timeScale = d3.time.scale().domain([minDate, maxDate]).range([10, w - 150])
+	
+	var catsUnfiltered = categories; // for vert labels
+	categories = checkUnique(categories);
+	
+	var svg = d3.selectAll(".svg")
+	.append("svg").attr("width", w).attr("height", h).attr("class", "svg");
+
+	var title = svg.append("text").text("Room Schedule Chart").attr("x", w / 2)
+			.attr("y", 25).attr("text-anchor", "middle").attr("font-size", 18)
+			.attr("fill", "#009FFC");
+	
+	makeGant(taskArray, w, h);
+
+</script>
+
+{% endblock %}
+
+{% block scripts %}
+{{ super() }}
+<script>
+$(document).ready(function() {
+    $('.datepicker').datepicker({
+            format: 'yyyy-mm-dd',
+            language: 'kr',
+            startDate: new Date()
+        });
+    });
+</script>
+{% endblock %}
+

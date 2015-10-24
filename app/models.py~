@@ -1,0 +1,607 @@
+from werkzeug.security import generate_password_hash, check_password_hash
+from itsdangerous import TimedJSONWebSignatureSerializer as Serializer
+from flask import current_app, request, url_for
+from flask.ext.login import AnonymousUserMixin, UserMixin
+from . import login_manager, create_app, db
+from datetime import datetime, timedelta
+from markdown import markdown
+import hashlib, bleach, os
+from app.exceptions import ValidationError
+from sqlalchemy.sql import and_, or_
+from sqlalchemy.orm import joinedload
+from sqlalchemy import CheckConstraint
+from flask.ext.security import AnonymousUser # UserMixin, RoleMixin
+
+
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+"""
+Application permission:
+Task name | Bit value | Description
+-----------+-------------+-----------------
+Follow users 0b00000001 (0x01) Follow other users
+Comment on posts made by others 0b00000010 (0x02) Comment on articles written by others
+Write articles 0b00000100 (0x04) Write original articles
+Moderate comments made by others 0b00001000 (0x08) Suppress offensive comments made by others
+Administration access 0b10000000 (0x80) Administrative access to the site
+"""
+class Permission:
+    FOLLOW = 0x01
+    COMMENT = 0x02
+    WRITE_ARTICLES = 0x04
+    MODERATE_COMMENTS = 0x08
+    ADMINISTER = 0x80
+
+"""
+User roles:
+User role |Permissions |Description
+-----------+--------------+--------------
+Anonymous 0b00000000 (0x00) User who is not logged in. Read-only access to the application.
+User 0b00000111 (0x07) Basic permissions to write articles and comments and to follow other users. This is the
+default for new users.
+Moderator 0b00001111 (0x0f) Adds permission to suppress comments deemed offensive or inappropriate.
+Administrator 0b11111111 (0xff) Full access, which includes permission to change the roles of other users.
+"""    
+class Role(db.Model):
+    __tablename__ = 'ns_roles'
+    id = db.Column(db.BigInteger, primary_key=True)
+    name = db.Column(db.String(64), unique=True)
+    default = db.Column(db.Boolean, default=False, index=True)
+    permissions = db.Column(db.Integer)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # One-to-Many 
+    users = db.relationship('User', backref='role', lazy='dynamic')
+
+    def __repr__(self):
+        return '<Role %r>' % self.name
+    
+    @staticmethod
+    def insert_roles():
+        roles = {
+                 'User': (Permission.FOLLOW | Permission.COMMENT | Permission.WRITE_ARTICLES, True),
+                 'Moderator': (Permission.FOLLOW | Permission.COMMENT | Permission.WRITE_ARTICLES | Permission.MODERATE_COMMENTS, False),
+                 'Administrator': (0xff, False)
+                 }
+        for r in roles:
+            role = Role.query.filter_by(name=r).first()
+            if role is None:
+                role = Role(name=r)
+            role.permissions = roles[r][0]
+            role.default = roles[r][1]
+            db.session.add(role)
+            
+        db.session.commit()
+        
+# Association table
+class Follow(db.Model):
+    __tablename__ = 'ns_follows'
+    follower_id = db.Column(db.BigInteger, db.ForeignKey('ns_users.id'), primary_key=True)
+    followed_id = db.Column(db.BigInteger, db.ForeignKey('ns_users.id'), primary_key=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    
+class Profile(db.Model):
+    __tablename__ = 'ns_profiles'
+    id = db.Column(db.BigInteger, primary_key=True)
+    #name = db.Column(db.String(64))
+    mobile = db.Column(db.String(20))
+    phone = db.Column(db.String(20))
+    zipcode = db.Column(db.String(7))
+    address = db.Column(db.String(255))
+    address2 = db.Column(db.String(255))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user_id = db.Column(db.BigInteger, db.ForeignKey('ns_users.id'))
+    
+    def __init__(self, mobile=None, phone=None, zipcode=None, address=None, address2=None):
+        self.mobile = mobile
+        self.phone = phone
+        self.zipcode = zipcode
+        self.address = address
+        self.address2 = address2
+        
+    def __repr__(self):
+        return '<Role %r>' % self.name
+    
+    def to_json(self):
+        json_profile = {
+                        "mobile": str(self.mobile),
+                        "phone": str(self.phone),
+                        "zipcode": str(self.zipcode),
+                        "address": str(self.address).encode('utf-8'),
+                        "address2": str(self.address2).encode('utf-8')
+                        }
+        return json_profile
+
+class User(UserMixin, db.Model):
+    __tablename__ = 'ns_users' 
+    id = db.Column(db.BigInteger, primary_key=True)
+    email = db.Column(db.String(64), unique=True, index=True) 
+    password_hash = db.Column(db.String(128)) 
+    confirmed = db.Column(db.Boolean, default=False)
+    name = db.Column(db.String(64))
+    location = db.Column(db.String(64))
+    about_me = db.Column(db.Text())
+    member_since = db.Column(db.DateTime(), default=datetime.utcnow)
+    last_seen = db.Column(db.DateTime(), default=datetime.utcnow)
+    avatar_hash = db.Column(db.String(32))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    role_id = db.Column(db.BigInteger, db.ForeignKey('ns_roles.id'))
+    posts = db.relationship('Post', backref='author', lazy='dynamic')
+    followed = db.relationship('Follow', foreign_keys=[Follow.follower_id],
+                               backref=db.backref('follower', lazy='joined'),
+                               lazy='dynamic', cascade='all, delete-orphan')
+    followers = db.relationship('Follow', foreign_keys=[Follow.followed_id],
+                                backref=db.backref('followed', lazy='joined'),
+                                lazy='dynamic', cascade='all, delete-orphan')
+    comments = db.relationship('Comment', backref='author', lazy='dynamic')
+    # One-to-Many relationship
+    books = db.relationship('Book', backref='user', lazy='dynamic')
+    # One-to-One relationship 
+    profile = db.relationship('Profile', backref=db.backref('user'), uselist=False)
+    connections = db.relationship('Connection',
+                        backref=db.backref('user', lazy='joined'))  
+      
+    def __init__(self, **kwargs):
+        super(User, self).__init__(**kwargs)
+        if self.role is None:
+            if self.email == current_app.config['BOOK_ADMIN']:
+                self.role = Role.query.filter_by(permissions=0xff).first()
+                
+            if self.role is None:
+                self.role = Role.query.filter_by(default=True).first()
+                
+        if self.email is not None and self.avatar_hash is None:
+            self.avatar_hash = hashlib.md5(self.email.encode('utf-8')).hexdigest()
+        #Make users their own followers on construction   
+        self.follow(self)
+            
+    def __repr__(self):
+        return '<User %r>' % self.email
+    
+    @property
+    def password(self):
+        raise AttributeError('password is not a readable attribute')
+    
+    @password.setter
+    def password(self, password):
+        self.password_hash = generate_password_hash(password)
+        
+    def verify_password(self, password):
+        return self.password_hash and check_password_hash(self.password_hash, password)
+    
+    def generate_confirmation_token(self, expiration=3600):
+        s = Serializer(current_app.config['SECRET_KEY'], expiration)
+        return s.dumps({'confirm': self.id})
+    
+    def confirm(self, token):
+        s = Serializer(current_app.config['SECRET_KEY'])
+        try:
+            data = s.loads(token)
+        except:
+            return False
+        if data.get('confirm') != self.id:
+            return False
+        
+        self.confirmed = True
+        db.session.add(self)
+        db.session.commit()
+        return True
+    
+    def generate_reset_token(self, expiration=3600):
+        s = Serializer(current_app.config['SECRET_KEY'])
+        return s.dumps({'reset': self.id})
+    
+    def reset_password(self, token, new_password):
+        s = Serializer(current_app.config['SECRET_KEY'])
+        try:
+            data = s.loads(token)
+        except:
+            return False
+        
+        if data.get('reset') != self.id:
+            return False
+        
+        self.password = new_password
+        db.session.add(self)
+        db.session.commit()
+        return True
+    
+    def generate_email_change_token(self, new_email, expiration=3600):
+        s = Serializer(current_app.config['SECRET_KEY'], expiration)
+        return s.dumps({'change_email': self.id, 'new_email': new_email})
+    
+    def change_email(self, token):
+        s = Serializer(current_app.config['SECRET_KEY'])
+        try:
+            data = s.loads(token)
+        except:
+            return False
+        
+        if data.get('change_email') != self.id:
+            return False
+        
+        new_email = data.get('new_email')
+        if new_email is None:
+            return False
+        if self.query.filter_by(email=new_email).first() is not None:
+            return False
+        
+        self.email = new_email
+        self.avatar_hash = hashlib.md5(self.email.encode('utf-8')).hexdigest()
+        db.session.add(self)
+        db.session.commit()
+        return True
+    
+    def can(self, permissions):
+        return self.role is not None and (self.role.permissions & permissions) == permissions
+    
+    def is_administrator(self):
+        return self.can(Permission.ADMINISTER)
+    
+    def ping(self):
+        self.last_seen = datetime.utcnow()
+        db.session.add(self)
+        db.session.commit()
+        
+    def gravatar(self, size=100, default='identicon', rating='g'):
+        if request.is_secure:
+            url = 'https://secure.gravatar.com/avatar'
+        else:
+            url = 'http://www.gravatar.com/avatar'
+        hash = self.avatar_hash or hashlib.md5(self.email.encode('utf-8')).hexdigest()
+        return '{url}/{hash}?s={size}&d={default}&r={rating}'.format(url=url,hash=hash,size=size,default=default, rating=rating)
+    
+    def follow(self, user):
+        if not self.is_following(user):
+            f = Follow(follower=self, followed=user)
+            db.session.add(f)
+            db.session.commit()
+            
+    def unfollow(self, user):
+        f = self.followed.filter_by(followed_id=user.id).first()
+        if f:
+            db.session.delete(f)
+            db.session.commit()
+            
+    def is_following(self, user):
+        return self.followed.filter_by(followed_id=user.id).first() is not None
+    
+    def is_followed_by(self, user):
+        return self.followers.filter_by(follower_id=user.id).first() is not None
+    
+    @property
+    def followed_posts(self):
+        return Post.query.join(Follow, Follow.followed_id == Post.author_id)\
+            .filter(Follow.follower_id == self.id)
+
+    def generate_auth_token(self, expiration):
+        s = Serializer(current_app.config['SECRET_KEY'], expires_in=expiration)
+        return s.dumps({'id': self.id})
+    
+    @staticmethod
+    def verify_auth_token(token):
+        s = Serializer(current_app.config['SECRET_KEY'])    
+        try:
+            data = s.loads(token)
+        except:
+            return None
+        return User.query.get(data['id'])
+    
+    def to_json(self):
+        json_user = {
+                     "url": url_for('api.get_post', id=self.id, _external=True),
+                     "name": self.name.encode('utf-8'),
+                     "email": self.email.encode('utf-8'),
+                     "member_since": str(self.member_since),
+                     "last_seen": str(self.last_seen),
+                     "posts": url_for('api.get_user_posts', id=self.id, _external=True),
+                     "followed_posts": url_for('api.get_user_followed_posts', id=self.id, _external=True),
+                     "post_count": self.posts.count(),
+                     "profile": self.profile.to_json() if self.profile else {}
+                     }
+        return json_user
+    
+    @staticmethod
+    def generate_fake(count=100):
+        from sqlalchemy.exc import IntegrityError
+        from random import seed
+        import forgery_py
+        
+        seed()
+        for i in range(count):
+            u = User(email=forgery_py.internet.email_address(),
+                     password=forgery_py.lorem_ipsum.word(),
+                     confirmed=True,
+                     name=forgery_py.name.full_name(),
+                     location=forgery_py.address.city(),
+                     about_me=forgery_py.lorem_ipsum.sentence(),
+                     member_since=forgery_py.date.date(True))
+            db.session.add(u)
+            try:
+                db.session.commit()
+            except:
+                db.session.rollback()
+                
+    # Make users their own followers
+    # (venv) $ python manage.py shell
+    # >>> User.add_self_follows()            
+    @staticmethod
+    def add_self_follows():
+        for user in User.query.all():
+            if not user.is_following(user):
+                user.follow(user)
+                db.session.add(user)
+                db.session.commit()
+ 
+    
+class MyAnonymousUser(AnonymousUser):
+    def can(self, permissions):
+        return False
+    
+    def is_administrator(self):
+        return False
+    
+login_manager.anonymous_user = MyAnonymousUser
+
+class Connection(db.Model):
+    __tablename__ = 'ns_connections'
+    id = db.Column(db.BigInteger, primary_key=True)
+    user_id = db.Column(db.BigInteger, db.ForeignKey('ns_users.id'))
+    provider_id = db.Column(db.String(255))
+    provider_user_id = db.Column(db.String(255))
+    access_token = db.Column(db.String(255))
+    secret = db.Column(db.String(255))
+    display_name = db.Column(db.String(255))
+    profile_url = db.Column(db.String(512))
+    image_url = db.Column(db.String(512))
+    rank = db.Column(db.Integer)
+
+   
+class Post(db.Model):
+    __tablename__ = 'ns_posts'
+    id = db.Column(db.BigInteger, primary_key=True)
+    body = db.Column(db.Text)
+    body_html = db.Column(db.Text)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    author_id = db.Column(db.BigInteger, db.ForeignKey('ns_users.id'))        
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    comments = db.relationship('Comment', backref='post', lazy='dynamic')
+
+    def __repr__(self):
+        return '<Post %r>' % self.id
+    
+    @staticmethod
+    def on_changed_body(target, value, oldvalue, initiator):
+        allowed_tags = ['a', 'abbr', 'acronym', 'b', 'blockquote', 'code',
+                        'em', 'i', 'li', 'ol', 'pre', 'strong', 'ul',
+                        'h1', 'h2', 'h3', 'p']
+        target.body_html = bleach.linkify(bleach.clean(markdown(value, output_format='html'),
+                                                       tags=allowed_tags, strip=True))
+    
+    def to_json(self):
+        json_post = {
+                     "url": url_for('api.get_post', id=self.id, _external=True),
+                     "body": self.body,
+                     "body_html": self.body_html,
+                     "timestamp": str(self.timestamp),
+                     "author": url_for('api.get_user', id=self.author_id, _external=True),
+                     "comments": url_for('api.get_post_comments', id=self.id, _external=True),
+                     "comment_count": self.comments.count()
+                     }    
+        return json_post
+    
+    @staticmethod
+    def from_json(json_post):
+        body = json_post.get('body')
+        if body is None or body == '':
+            raise ValidationError('post does not  have a body')
+        return Post(body=body)
+    
+    @staticmethod
+    def generate_fake(count=100):
+        from random import seed, randint
+        import forgery_py
+        
+        seed()
+        user_count = User.query.count()
+        for i in range(count):
+            u = User.query.offset(randint(0, user_count - 1)).first()
+            p = Post(body=forgery_py.lorem_ipsum.sentences(randint(1, 3)), 
+                     timestamp=forgery_py.date.date(True),
+                     author=u)
+            db.session.add(p)
+            db.session.commit()
+            
+db.event.listen(Post.body, 'set', Post.on_changed_body)
+    
+class Comment(db.Model):
+    __tablename__ = 'ns_comments'
+    id = db.Column(db.BigInteger, primary_key=True)
+    body = db.Column(db.Text)
+    body_html = db.Column(db.Text)
+    timestamp = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    disabled = db.Column(db.Boolean)
+    author_id = db.Column(db.BigInteger, db.ForeignKey('ns_users.id'))
+    post_id = db.Column(db.BigInteger, db.ForeignKey('ns_posts.id'))
+    
+    def __repr__(self):
+        return '<Comment %r>' % self.id
+    
+    @staticmethod
+    def on_changed_body(target, value, oldvalue, initiator):
+        allowed_tags = ['a', 'abbr', 'acronym', 'b', 'code', 'em', 'i',
+                        'strong']
+        target.body_html = bleach.linkify(bleach.clean(markdown(value, output_format='html'),
+                                                       tags=allowed_tags, strip=True))
+      
+    def to_json(self):
+        json_comment = {
+                        "url": url_for('api.get_comment', id=self.id, _external=True),
+                        "post": url_for('api.get_post', id=self.post_id, _external=True),
+                        "body": self.body,
+                        "body_html": self.body_html,
+                        "timestamp": str(self.timestamp),
+                        "author": url_for('api.get_user', id=self.author_id, _external=True)
+                        }    
+        return json_comment
+    
+    @staticmethod
+    def from_json(json_comment):
+        body = json_comment.get('body')
+        if body is None or body == '':
+            raise ValidationError('Comment does not have a body.')
+        return Comment(body=body)
+    
+db.event.listen(Comment.body, 'set', Comment.on_changed_body)
+
+room_books = db.Table('ns_room_books', 
+                     db.Column('room_id', db.BigInteger, db.ForeignKey('ns_rooms.id')),
+                     db.Column('book_id', db.BigInteger, db.ForeignKey('ns_books.id'))
+                     )
+
+class Room(db.Model):     
+    __tablename__ = 'ns_rooms'
+    id = db.Column(db.BigInteger, primary_key=True)
+    number = db.Column(db.Integer, unique=True)
+    name = db.Column(db.String(20))
+    guests = db.Column(db.SmallInteger)
+    active = db.Column(db.Boolean, default=True)
+    created_at = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # Many-to-Many rooms -- books
+    books = db.relationship('Book', 
+                            secondary=room_books, 
+                            backref=db.backref('rooms', lazy='dynamic'),
+                            lazy='dynamic')
+     
+    def __repr__(self):
+        return '<Room %r>' % self.number
+    
+                
+    @staticmethod
+    def schedule(room_id, from_date, to_date):
+        return Room.query.with_entities(Room, Book).\
+                outerjoin(Room.books).\
+                filter(Room.id == room_id).\
+                filter(and_(Book.checkin_on >= from_date, Book.checkin_on <= to_date)).\
+                order_by(Book.checkin_on.desc())           
+     
+    def between_books(self, from_date, to_date):
+        return self.books.filter(and_(Book.checkin_on >= from_date, Book.checkin_on <= to_date)).\
+                order_by(Book.checkin_on.desc())           
+
+    def to_json(self):
+        json_room = {
+                     "number": self.number,
+                     "name": self.name.encode('utf-8'),
+                     "books": url_for('.room', number=self.number, _external=True)
+                     }
+        return json_room
+
+class Book(db.Model):
+    __tablename__ = 'ns_books'
+    id = db.Column(db.BigInteger, primary_key=True)
+    room_count = db.Column(db.Integer, default=0)
+    checkin_on = db.Column(db.Date, index=True)
+    checkout_on = db.Column(db.Date, index=True)
+    created_at = db.Column(db.DateTime, index=True, default=datetime.utcnow)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow)
+    user_id = db.Column(db.BigInteger, db.ForeignKey('ns_users.id'))
+    __table_args__ = (
+                      CheckConstraint('checkin_on < checkout_on'),
+                      CheckConstraint(and_('checkin_on != None, checkout_on != None)')),{}
+                      )
+    
+    def __repr__(self):
+        return '<Room %r>' % self.id
+   
+    def __init__(self, checkin_on, checkout_on, room_count, email, name, 
+                 mobile=None, phone=None, zipcode=None, address=None, address2=None):
+        self.checkin_on = checkin_on
+        self.checkout_on = checkout_on
+        self.room_count = room_count
+        user = User.query.filter_by(email=email).first()
+        if not user:
+            user = User(email=email, name=name)
+        else:
+            user.name = name
+            
+        if not user.profile:
+            profile = Profile(mobile=mobile, phone=phone, zipcode=zipcode, address=address, address2=address2)
+            user.profile = profile
+        else:
+            if mobile:
+                user.profile.mobile = mobile
+            if phone:
+                user.profile.phone = phone
+                   
+        self.user = user  
+ 
+    @staticmethod
+    def available_rooms(from_date, to_date):
+        """ return rooms of booking available """
+        room_book_q = Room.query.with_entities(Room)
+        return room_book_q.filter_by(active=True).filter(Room.id.notin_(
+                Room.query.with_entities(Room.id).outerjoin(Room.books).\
+                filter(or_(and_(Book.checkin_on <= from_date, Book.checkout_on > from_date), 
+                       and_(Book.checkout_on >= to_date, Book.checkin_on < to_date),
+                       and_(Book.checkin_on >= from_date, Book.checkin_on < to_date)))
+                    )).\
+                order_by(Room.number.asc())
+    
+    @staticmethod
+    def available_booking(room_ids, from_date, to_date):
+        """ return true if room ids booking available """
+        available_room_ids = Room.query.with_entities(Room.id).filter(Room.id.notin_(
+                Room.query.with_entities(Room.id).outerjoin(Room.books).\
+                filter(or_(and_(Book.checkin_on <= from_date, Book.checkout_on > from_date), 
+                       and_(Book.checkout_on >= to_date, Book.checkin_on < to_date),
+                       and_(Book.checkin_on >= from_date, Book.checkin_on < to_date)))
+                    )).all()
+        #print('>> room_ids: %s' % set(room_ids))
+        #print('>>available_room_ids: %s' % set([item for sublist in available_room_ids for item in sublist]))
+        booked = list(set(room_ids)- set([item for sublist in available_room_ids for item in sublist]))
+        if not booked:
+            return True
+        else:
+            return False
+   
+    def rooms_schedule(self, interval=15):
+        from_date = self.checkin_on - timedelta(days=interval)
+        to_date = self.checkin_on + timedelta(days=interval)
+        
+        return Room.query.with_entities(Room, Book).\
+                outerjoin(Room.books).\
+                options(joinedload(Book.user)).\
+                filter(Room.number.in_([room.number for room in self.rooms])).\
+                filter(and_(Book.checkin_on >= from_date, Book.checkin_on <= to_date)).\
+                order_by(Room.number.asc(), Book.checkin_on.desc())           
+
+
+    @staticmethod
+    def rooms_schedules(rooms, from_date= (datetime.today().date() - timedelta(days=15)), 
+                        to_date = (datetime.today().date() + timedelta(days=15))):
+       
+        return Room.query.with_entities(Room, Book).\
+                outerjoin(Room.books).\
+                options(joinedload(Book.user)).\
+                filter(Room.number.in_([room.number for room in rooms])).\
+                filter(and_(Book.checkin_on >= from_date, Book.checkin_on <= to_date)).\
+                order_by(Room.number.asc(), Book.checkin_on.desc())           
+
+    def to_json(self):
+        json_book = {
+                     "id": self.id,
+                     "room_count": self.room_count,
+                     "checkin_on": str(self.checkin_on),
+                     "checkout_on": str(self.checkout_on),
+                     "user": self.user.to_json() if self.user else {}
+                     }
+        return json_book
+    

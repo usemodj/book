@@ -1,0 +1,8 @@
+eclipse.preferences.version=1
+encoding//venv/lib/python2.7/site-packages/flask_social/__init__.py=utf-8
+encoding//venv/lib/python2.7/site-packages/flask_social/core.py=utf-8
+encoding//venv/lib/python2.7/site-packages/flask_social/datastore.py=utf-8
+encoding//venv/lib/python2.7/site-packages/flask_social/providers/facebook.py=utf-8
+encoding//venv/lib/python2.7/site-packages/flask_social/signals.py=utf-8
+encoding//venv/lib/python2.7/site-packages/flask_social/utils.py=utf-8
+encoding//venv/lib/python2.7/site-packages/flask_social/views.py=utf-8

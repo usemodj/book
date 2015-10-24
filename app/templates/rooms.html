@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% import "bootstrap/wtf.html" as wtf %}
+{% import "_macros.html" as macros %}
+{% block head %}
+{{ super() }}
+    <script src='http://cdnjs.cloudflare.com/ajax/libs/d3/3.3.3/d3.min.js'></script>
+    <script src="{{ url_for('static', filename='js/gantt-chart.js') }}"></script>
+{% endblock %}
+
+{% block title %} Reservation - Rooms {% endblock %}
+
+{% block page_content %}
+	
+<div class="page-header">
+    <h1>Registration - Rooms </h1>
+	{{wtf.quick_form(form, form_type='horizontal', horizontal_columns=('lg', 2, 3)) }}
+</div>
+<table class="table table-hover followers">
+    <thead><tr><th>Room Number</th><th>Room Name</th><th>Guests</th><th>Active</th><th>&nbsp;</th></tr></thead>
+    {% for room in rooms %}
+    <tr>
+        <td>
+            <a href="/room/{{room.number}}">
+                {{ room.number }}
+            </a>
+        </td>
+        <td>{{ room.name }}</td>
+        <td>{{ room.guests }}</td>
+        <td>{{ room.active }}</td>
+        <td> <a href="/room/{{room.number}}/edit" class="btn btn-xs btn-default">Edit</a>
+    </tr>
+    {% endfor %}
+</table>
+<div class="pagination">
+    {{ macros.pagination_widget(pagination, '.rooms') }}
+</div>
+<div id="gantt-chart" style="height:400px">
+	<div class="svg"></div>
+	<div id="tag"></div>
+</div>
+
+<script>
+	var w = 800;
+	var h = 500;
+	var dateFormat = d3.time.format("%Y-%m-%d");
+	var taskArray = {{ rooms_schedules | safe }};
+	var categories = new Array()
+	for(var i = 0; i < taskArray.length; i++){
+		categories.push(taskArray[i].number)
+	}
+
+	var minDate = dateFormat.parse('{{ from_date }}');
+	var maxDate = dateFormat.parse('{{ to_date }}');
+	
+	var timeScale = d3.time.scale().domain([minDate, maxDate]).range([10, w - 150])
+	
+	var catsUnfiltered = categories; // for vert labels
+	categories = checkUnique(categories);
+	
+	var svg = d3.selectAll(".svg")
+	.append("svg").attr("width", w).attr("height", h).attr("class", "svg");
+
+	var title = svg.append("text").text("Room Schedule Chart").attr("x", w / 2)
+			.attr("y", 25).attr("text-anchor", "middle").attr("font-size", 18)
+			.attr("fill", "#009FFC");
+	
+	makeGant(taskArray, w, h);
+
+</script>
+
+{% endblock %}
